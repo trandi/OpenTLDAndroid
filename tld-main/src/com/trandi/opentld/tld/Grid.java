@@ -41,7 +41,7 @@ class Grid implements Iterable<BoundingBox>{
 	
 	
 	final List<BoundingBox> grid = new ArrayList<BoundingBox>();
-	private final List<Size> scales = new ArrayList<Size>();
+	private final List<Size> trackedBoxScales = new ArrayList<Size>();
 	final List<BoundingBox> goodBoxes = new ArrayList<BoundingBox>();	//bboxes with overlap > GOOD_OVERLAP
 	final private List<BoundingBox> badBoxes = new ArrayList<BoundingBox>();	//bboxes with overlap < BAD_OVERLAP
 	BoundingBox bbHull = new BoundingBox(); // hull of good_boxes
@@ -61,7 +61,7 @@ class Grid implements Iterable<BoundingBox>{
 			
 			// continue ONLY if the future box is "reasonable": bigger than the min window and smaller than the full image !
 			if(minBbSide >= minWinSide && width <= img.cols() && height <= img.rows()){
-				scales.add(new Size(width, height));
+				trackedBoxScales.add(new Size(width, height));
 				final int shift = Math.round(SHIFT * minBbSide);
 				
 				for(int row=1; row<(img.rows() - height); row+=shift){
@@ -71,7 +71,7 @@ class Grid implements Iterable<BoundingBox>{
 						bbox.y = row;
 						bbox.width = width;
 						bbox.height = height;
-						bbox.scaleIdx = scales.size() - 1; // currently last one in this list
+						bbox.scaleIdx = trackedBoxScales.size() - 1; // currently last one in this list
 						bbox.overlap = bbox.calcOverlap(trackedBox);
 						
 						grid.add(bbox);
@@ -123,7 +123,7 @@ class Grid implements Iterable<BoundingBox>{
 	
 	
 	private void updateBBHull(){
-		if(goodBoxes.isEmpty()) throw new IllegalStateException("Can't Calculate the BBHull without at least 1 good box !");			
+		//if(goodBoxes.isEmpty()) throw new IllegalStateException("Can't Calculate the BBHull without at least 1 good box !");			
 		int x1 = Integer.MAX_VALUE, x2 = 0;
 		int y1 = Integer.MAX_VALUE, y2 = 0;
 		for (BoundingBox goodBox : goodBoxes) {
@@ -162,8 +162,8 @@ class Grid implements Iterable<BoundingBox>{
 		return bbHull;
 	}
 	
-	Size[] getScales(){
-		return scales.toArray(new Size[scales.size()]);
+	Size[] getTrackedBoxScales(){
+		return trackedBoxScales.toArray(new Size[trackedBoxScales.size()]);
 	}
 	
 	public int getSize(){

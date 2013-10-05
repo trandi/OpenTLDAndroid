@@ -50,7 +50,8 @@ public class Tld {
 	
 	
 	ParamsTld _params;
-	FerNNClassifier _classifier;
+	FernEnsembleClassifier _classifierFern;
+	NNClassifier _classifierNN;
 	private final LKTracker _tracker = new LKTracker();
 	private PatchGenerator _patchGenerator; // FIXME UNUSED, why !?
 	private final RNG _rng = new DefaultRNG();
@@ -64,7 +65,7 @@ public class Tld {
 	// for performance reasons, duplicate the data directly in Java, to avoid too many native code invocations
 	private int[] _iisumJava;
 	private double[] _iisqsumJava;
-	private float _var;
+	private float _var; // variance of the initial patch/box. Will be used by the 1st stage of the classifier.
 	
 	// Training data
 	Mat _pExample = new Mat(); // positive NN example
@@ -85,7 +86,8 @@ public class Tld {
 	
 	public Tld(Properties parameters){
 		_params = new ParamsTld(parameters);
-		_classifier = new FerNNClassifier(parameters);
+		_classifierFern = new FernEnsembleClassifier(parameters);
+		_classifierNN = new NNClassifier(parameters);
 		_patchGenerator = new PatchGenerator(0, 0, _params.noise_init, true, 1 - _params.scale_init, 1 + _params.scale_init,
 				-_params.angle_init * Math.PI / 180f, _params.angle_init * Math.PI / 180f, 
 				-_params.angle_init * Math.PI / 180f, _params.angle_init * Math.PI / 180f);
@@ -112,7 +114,7 @@ public class Tld {
 		// correct bounding box
 		_lastbox = _grid.getBestBox();
 		
-		prepareClassifier(_grid.getScales());
+		_classifierFern.prepare(_grid.getTrackedBoxScales(), _rng);
 		
 		
 		// generate DATA
@@ -120,9 +122,10 @@ public class Tld {
 		generatePositiveData(frame1, _params.num_warps_init, _grid);
 		
 		// Set variance threshold
-		MatOfDouble mean = new MatOfDouble(), stddev = new MatOfDouble();
-		Core.meanStdDev(frame1.submat(_grid.getBestBox()), mean, stddev);
+		MatOfDouble stddev = new MatOfDouble();
+		Core.meanStdDev(frame1.submat(_grid.getBestBox()), new MatOfDouble(), stddev);
 		updateIntegralImgs(frame1);
+		// this is directly half of the variance of the initial box, which will be used the the 1st stage of the classifier
 		_var = (float)Math.pow(stddev.toArray()[0], 2d) * 0.5f;
 		// check variance
 		final double checkVar = Util.getVar(_grid.getBestBox(), _iisumJava, _iisqsumJava, _iiCols) * 0.5;
@@ -151,10 +154,11 @@ public class Tld {
 		// TRAINING
 		Log.i(Util.TAG, "Init Start Training with " + fernsData.size() + " ferns, " 
 		+ _nExamples.size() + " nExamples, " + nFernsTest.size() + " nFernsTest, " + nExamplesTest.size() + " nExamplesTest");
-		_classifier.trainF(fernsData, 2);
-		_classifier.trainNN(_pExample, _nExamples);
+		_classifierFern.trainF(fernsData, 10);
+		_classifierNN.trainNN(_pExample, _nExamples);
 		// Threshold evaluation on testing sets
-		_classifier.evaluateThreshold(nFernsTest, nExamplesTest);
+		_classifierFern.evaluateThreshold(nFernsTest);
+		_classifierNN.evaluateThreshold(nExamplesTest);
 	}
 
 	private void updateIntegralImgs(Mat frame) {
@@ -177,22 +181,22 @@ public class Tld {
 		
 		// 2. DETECT
 		//start = System.currentTimeMillis();
-		final Pair<List<DetectionStruct>, List<DetectionStruct>> detStructs = null;//detect(currentImg);
+		final Pair<List<DetectionStruct>, List<DetectionStruct>> detStructs = detect(currentImg);
 		//Log.i(Util.TAG, "DETECT: " + (System.currentTimeMillis() - start));
 		
 		// 3. INTEGRATION tracking with detection
 		if(trackingStruct != null){
 			_lastbox = trackingStruct.predictedBB;
-			if(trackingStruct.conf > _classifier.getNNThresholdValid()){
-				Log.i(Util.TAG, "Tracking confidence: " + trackingStruct.conf + " > " + " Threshold: " + _classifier.getNNThresholdValid() + " ===> WILL LEARN");
+			if(trackingStruct.conf > _classifierNN.getNNThresholdValid()){
+				Log.i(Util.TAG, "Tracking confidence: " + trackingStruct.conf + " > " + " Threshold: " + _classifierNN.getNNThresholdValid() + " ===> WILL LEARN");
 				_learn = true;
 			}else{
-				Log.i(Util.TAG, "Tracking confidence: " + trackingStruct.conf + " < " + " Threshold: " + _classifier.getNNThresholdValid() + " ===> WILL NOT LEARN");
+				Log.i(Util.TAG, "Tracking confidence: " + trackingStruct.conf + " < " + " Threshold: " + _classifierNN.getNNThresholdValid() + " ===> WILL NOT LEARN");
 			}
 			
 			Log.i(Util.TAG, "Tracked");
 			if(detStructs != null){
-				final Map<BoundingBox, Float> clusters = clusterConfidentIndices(_classifier.getNnValidBoxes(detStructs.second));// cluster detections
+				final Map<BoundingBox, Float> clusters = clusterConfidentIndices(_classifierNN.getNnValidBoxes(detStructs.second));// cluster detections
 				Log.i(Util.TAG, "Found " + clusters.size() + " clusters");
 				final Map<BoundingBox, Float> confidentClusters = new HashMap<BoundingBox, Float>();
 				for(BoundingBox clusterBox : clusters.keySet()){
@@ -234,7 +238,7 @@ public class Tld {
 			_lastbox = null;
 			_learn = false;
 			if(detStructs != null){  // and detector is defined
-				final Map<BoundingBox, Float> clusters = clusterConfidentIndices(_classifier.getNnValidBoxes(detStructs.second));// cluster detections
+				final Map<BoundingBox, Float> clusters = clusterConfidentIndices(_classifierNN.getNnValidBoxes(detStructs.second));// cluster detections
 				if(clusters.size() == 1){
 					// not tracking but detected exactly 1 cluster -> use this one as the best option
 					_lastbox = clusters.keySet().iterator().next();
@@ -297,11 +301,15 @@ public class Tld {
 
 		// estimate Confidence
 		Mat pattern = new Mat();
+		try{
 		getPattern(currentImg.submat(predictedBB.intersect(currentImg)), pattern);
+		}catch(Throwable t){
+			Log.e(Util.TAG, "PredBB when failed: " + predictedBB);
+		}
 		//Log.i(Util.TAG, "Confidence " + pattern.dump());		
 		
 		//Conservative Similarity
-		final NNConfStruct nnConf = _classifier.nnConf(pattern);
+		final NNConfStruct nnConf = _classifierNN.nnConf(pattern);
 		Log.i(Util.TAG, "Tracking confidence: " + nnConf.conservativeSimilarity);
 		
 		Log.i(Util.TAG, "[TRACK END]");
@@ -309,6 +317,12 @@ public class Tld {
 	}
 	
 	
+	/**
+	 * Structure the classifier into 3 stages:
+	 * a) patch variance
+	 * b) ensemble of ferns classifier
+	 * c) nearest neighbour
+	 */
 	private Pair<List<DetectionStruct>, List<DetectionStruct>> detect(final Mat frame){
 		Log.i(Util.TAG, "[DETECT]");
 		
@@ -328,16 +342,17 @@ public class Tld {
 		final long start = System.currentTimeMillis();
 		int a=0;
 		for(BoundingBox box : _grid){
-			// speed up by doing the features/ferns check ONLY if the variance is high enough !
+			// a) speed up by doing the features/ferns check ONLY if the variance is high enough !
 			if(Util.getVar(box, _iisumJava, _iisqsumJava, _iiCols) >= _var ){
 				a++;
 				final Mat patch = img.submat(box);
-				final int[] pattern = _classifier.getFeatures(patch, box.scaleIdx);
-				final float conf = _classifier.measureForest(pattern);
-				_tmpDetectData.put(box,  new TempStruct(conf, pattern));// store for later use in learning
+				final int[] allFernsHashCodes = _classifierFern.getAllFernsHashCodes(patch, box.scaleIdx);
+				final double averagePosterior = _classifierFern.averagePosterior(allFernsHashCodes);
+				_tmpDetectData.put(box,  new TempStruct(averagePosterior, allFernsHashCodes));// store for later use in learning
 				
-				if(conf > _classifier.getNumStructs() * _classifier.getFernThreshold()){
-					fernClassDetected.add(new DetectionStruct(box,  pattern, conf));
+				// b)
+				if(averagePosterior > _classifierFern.getFernThreshold()){
+					fernClassDetected.add(new DetectionStruct(box, allFernsHashCodes, averagePosterior, patch));
 				}
 			}else{
 				// too small variance, nothing detected
@@ -345,11 +360,9 @@ public class Tld {
 			}
 		}
 		
-		//Log.i(Util.TAG, "BTneck (grid size: " + grid.getSize() + " Time: " + (System.currentTimeMillis() - start));
 		Log.i(Util.TAG, a + " Bounding boxes passed the variance filter (" + _var + ")");
 		Log.i(Util.TAG, fernClassDetected.size() + " Initial detected from Fern Classifier");
 		if(fernClassDetected.size() == 0){
-			// stop here
 			Log.i(Util.TAG, "[DETECT END]");
 			return null;
 		}
@@ -358,20 +371,19 @@ public class Tld {
 		Util.keepBestN(fernClassDetected, MAX_DETECTED, new Comparator<DetectionStruct>() {
 			@Override
 			public int compare(DetectionStruct detS1, DetectionStruct detS2) {
-				return Float.valueOf(detS1.forestConf).compareTo(detS2.forestConf);
+				return Double.compare(detS1.averagePosterior, detS2.averagePosterior);
 			}
 		});
 		
 		
-		// 2. MATCHING
+		// 2. MATCHING using the NN classifier  c)
 		for(DetectionStruct detStruct : fernClassDetected){
-			final Mat patch = frame.submat(detStruct.detectedBB);
-			// update the detStruct.patch
-			getPattern(patch, detStruct.patch);
-			detStruct.nnConf = _classifier.nnConf(detStruct.patch);
-			if(detStruct.nnConf.relativeSimilarity > _classifier.getNNThreshold()){
-				nnMatches.add(detStruct);
-				//TODO dconf.push_back(dt.conf2[i]); 
+			// update detStruct.patch to params.patch_size and normalise it
+			getPattern(detStruct.patch, detStruct.patch); // surprisingly this seems to work even if it's a transformation onto itself !
+			
+			detStruct.nnConf = _classifierNN.nnConf(detStruct.patch);
+			if(detStruct.nnConf.relativeSimilarity > _classifierNN.getNNThreshold()){
+				nnMatches.add(detStruct); 
 			}
 		}
 		
@@ -384,7 +396,7 @@ public class Tld {
 		Log.i(Util.TAG, "[LEARN]");
 		Mat pattern = new Mat();
 		final double stdev = getPattern(img.submat(_lastbox.intersect(img)), pattern);
-		final NNConfStruct confStruct = _classifier.nnConf(pattern);
+		final NNConfStruct confStruct = _classifierNN.nnConf(pattern);
 		
 		if(confStruct.relativeSimilarity < 0.5){
 			Log.w(Util.TAG, "Fast change, NOT learning");
@@ -412,7 +424,7 @@ public class Tld {
 		final List<Pair<int[], Boolean>> fernExamples = new ArrayList<Util.Pair<int[], Boolean>>(_pFerns);
 		for(BoundingBox badBox : _grid.getBadBoxes()){
 			final TempStruct tempStruct = _tmpDetectData.get(badBox);
-			if(tempStruct != null && tempStruct.conf >= 1){
+			if(tempStruct != null && tempStruct.averagePosterior >= 1){
 				fernExamples.add(new Pair<int[], Boolean>(tempStruct.pattern, false));
 			}
 		}
@@ -427,8 +439,8 @@ public class Tld {
 		}
 		
 		// Classifiers update
-		_classifier.trainF(fernExamples, 2);
-		_classifier.trainNN(_pExample, _nExamples);
+		_classifierFern.trainF(fernExamples, 2);
+		_classifierNN.trainNN(_pExample, _nExamples);
 		
 		Log.i(Util.TAG, "[LEARN END]");
 		return true;
@@ -609,7 +621,7 @@ public class Tld {
 		for(BoundingBox badBox : badBoxes){
 			if(Util.getVar(badBox, _iisumJava, _iisqsumJava, _iiCols) >= _var * 0.5f){
 				final Mat patch = frame.submat(badBox);
-				final int[] fern = _classifier.getFeatures(patch, badBox.scaleIdx);
+				final int[] fern = _classifierFern.getAllFernsHashCodes(patch, badBox.scaleIdx);
 				negFerns.add(new Pair<int[], Boolean>(fern, false));
 			}
 		}
@@ -652,15 +664,15 @@ public class Tld {
 		
 		for(int i = 0; i < numWarps; i++){
 			if(i > 0){
-				// warped is a reference to a subset of the img data
-				// TODO re-introduce this, but it should work without !
-				//patchGenerator.generate(frame, pt, warped, bbhull.size(), rng);
+				// this is important as it introduces the necessary noise / fuziness in the initial examples such that the Fern classifier recognises similar shapes not only Exact ones ! 
+				// warped is a reference to a subset of the img data, so this will affect the img object
+				_patchGenerator.generate(frame, pt, warped, bbhull.size(), _rng);
 			}
 
 			final BoundingBox[] goodBoxes = aGrid.getGoodBoxes();
 			for(BoundingBox goodBox : goodBoxes){
 				final Mat patch = img.submat(goodBox);
-				final int[] fern = _classifier.getFeatures(patch, goodBox.scaleIdx);
+				final int[] fern = _classifierFern.getAllFernsHashCodes(patch, goodBox.scaleIdx);
 				_pFerns.add(new Pair<int[], Boolean>(fern, true));
 			}
 		}
@@ -668,10 +680,6 @@ public class Tld {
 		Log.i(Util.TAG, "Positive examples generated( ferns: " + _pFerns.size() + " NN: 1/n )");
 	}
 	
-	
-	private void prepareClassifier(final Size[] scales){
-		_classifier.prepare(scales, _rng);
-	}
 	
 	/**
 	 * Output: resized zero-mean patch/pattern
@@ -696,14 +704,15 @@ public class Tld {
 	static final class DetectionStruct {
 		public final BoundingBox detectedBB;
 		public final int[] pattern;
-		public final float forestConf;
-		public Mat patch;
+		public final double averagePosterior;
+		public final Mat patch;
 		public NNConfStruct nnConf;
 		
-		DetectionStruct(BoundingBox detectedBB, int[] pattern, float forestConf) {
+		DetectionStruct(BoundingBox detectedBB, int[] pattern, double averagePosterior, Mat patch) {
 			this.detectedBB = detectedBB;
 			this.pattern = pattern;
-			this.forestConf = forestConf;
+			this.averagePosterior = averagePosterior;
+			this.patch = patch;
 		}
 	}
 	
@@ -722,11 +731,11 @@ public class Tld {
 	}
 	
 	private static final class TempStruct {
-		public final float conf;
+		public final double averagePosterior;
 		public final int[] pattern;
 		
-		TempStruct(float conf, int[] pattern){
-			this.conf = conf;
+		TempStruct(double averagePosterior2, int[] pattern){
+			this.averagePosterior = averagePosterior2;
 			this.pattern = pattern;
 		}
 	}

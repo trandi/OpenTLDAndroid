@@ -17,7 +17,6 @@
 package com.trandi.opentld.tld;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 import org.opencv.core.CvType;
@@ -87,7 +86,7 @@ class LKTracker {
 		errSimilarity = normCrossCorrelation(lastImg, currentImg, lastPoints, currPoints, status);
 		
 		
-		//..... HEREHERERER  errSimilarityFB has problem != from C++
+		//TODO  errSimilarityFB has problem != from C++
 		// filter out points with fwd-back error > the median AND points with similarity error > median
 		return filterPts(lastPoints, currPoints, errSimilarity, errSimilarityFB, status);
 	}
@@ -123,13 +122,6 @@ class LKTracker {
 	 * @return Pair of new, FILTERED, last and current POINTS. Null if none were valid (with similarity > median and FB error <= median)
 	 */
 	private Pair<Point[], Point[]> filterPts(final Point[] lastPoints, final Point[] currentPoints, final float[] similarity, final float[] errFB, final byte[] status){
-//		Log.i(Util.TAG, "currentPoints: " + Arrays.toString(currentPoints));
-//		Log.i(Util.TAG, "lastPoints: " + Arrays.toString(lastPoints));
-//		Log.i(Util.TAG, "similarity: " + Arrays.toString(similarity));
-//		Log.i(Util.TAG, "errFB: " + Arrays.toString(errFB));
-//		Log.i(Util.TAG, "status: " + Arrays.toString(status));
-		
-		
 		final List<Point> filteredLastPoints = new ArrayList<Point>();
 		final List<Point> filteredCurrentPoints = new ArrayList<Point>();
 		final List<Float> filteredErrFB = new ArrayList<Float>();

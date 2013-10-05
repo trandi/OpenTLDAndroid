@@ -81,30 +81,30 @@ class Parameters {
 	}	
 	
 	
-	static class ParamsClassifier extends Parameters {
-		float pos_thr_fern;
+	static class ParamsClassifiers extends Parameters {
+		double pos_thr_fern;
 		float neg_thr_fern;
-		int structSize;
-		int nstructs;
+		int numFeaturesPerFern;
+		int numFerns;
 		float valid;
 		float ncc_thesame;
 		float pos_thr_nn;
 		float pos_thr_nn_valid;
 		float neg_thr_nn;
 
-		ParamsClassifier(){
+		ParamsClassifiers(){
 			super(null);
 		}
 		
-		ParamsClassifier(Properties props) {
+		ParamsClassifiers(Properties props) {
 			super(props);
 
 			valid = getFloat("valid");
 			ncc_thesame = getFloat("ncc_thesame");
-			nstructs = getInt("num_trees");
-			structSize = getInt("num_features");
+			numFerns = getInt("num_ferns");
+			numFeaturesPerFern = getInt("num_features_per_fern");
 			pos_thr_fern = getFloat("pos_thr_fern");
-			neg_thr_fern = getFloat("neg_thr_fern", 0.5f);
+			neg_thr_fern = getFloat("neg_thr_fern", 0.3f);
 			pos_thr_nn = getFloat("pos_thr_nn");
 			pos_thr_nn_valid = getFloat("pos_thr_nn_valid");
 			neg_thr_nn = getFloat("neg_thr_nn", 0.5f);

@@ -1,10 +1,17 @@
-<LinearLayout android:id="@+id/mainLinearLayout"
+<LinearLayout android:id="@+id/main_linear_layout"
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:opencv="http://schemas.android.com/apk/res-auto"
     android:layout_width="fill_parent"
     android:layout_height="fill_parent"
     android:orientation="horizontal" >
 
-    
-    <LinearLayout android:id="@+id/cameraFeedHolder" android:layout_height="wrap_content" android:layout_width="wrap_content"/>
 
+	<com.trandi.opentld.TLDView
+		android:layout_width="200px"
+		android:layout_height="150px"
+		android:visibility="gone"
+		android:id="@+id/tld_view"
+		opencv:show_fps="true"
+		opencv:camera_id="any" />
+	
 </LinearLayout>

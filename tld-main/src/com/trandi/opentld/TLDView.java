@@ -21,25 +21,25 @@ import java.io.InputStream;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.opencv.android.Utils;
+import org.opencv.android.CameraBridgeViewBase;
+import org.opencv.android.JavaCameraView;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.core.Point;
 import org.opencv.core.Rect;
 import org.opencv.core.Scalar;
-import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
 
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Paint.Style;
+import android.util.AttributeSet;
 import android.util.Log;
 import android.view.MotionEvent;
+import android.view.SurfaceHolder;
 import android.view.View;
-import android.webkit.WebChromeClient.CustomViewCallback;
 
 import com.trandi.opentld.tld.BoundingBox;
 import com.trandi.opentld.tld.Tld;
@@ -47,7 +47,11 @@ import com.trandi.opentld.tld.Tld.ProcessFrameStruct;
 import com.trandi.opentld.tld.Util;
 
 
-public class TLDView extends OpenCvViewBase {	
+public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCameraViewListener {
+	final private SurfaceHolder _holder;
+    private int _canvasImgYOffset;
+    private int _canvasImgXOffset;
+	
 	private Mat _currentGray = new Mat();
 	private Mat _lastGray = new Mat();
 	private Tld _tld = null;
@@ -55,8 +59,9 @@ public class TLDView extends OpenCvViewBase {
 	private ProcessFrameStruct _processFrameStruct = null;
 	private Properties _tldProperties;
 	
-	public TLDView(Context context) {
-		super(context);
+	public TLDView(Context context, AttributeSet attrs) {
+		super(context, attrs);
+		_holder = getHolder();
 		
 		// Init the PROPERTIES
 		InputStream propsIS = null;
@@ -75,6 +80,10 @@ public class TLDView extends OpenCvViewBase {
 				}
 			}
 		}
+		
+		// listens to its own events
+		setCvCameraViewListener(this);
+		
 		
 		// DEBUG
 		//_trackedBox = new BoundingBox(165,93,51,54, 0, 0);
@@ -116,7 +125,7 @@ public class TLDView extends OpenCvViewBase {
 	}
 
 	@Override
-	protected Bitmap processFrame(Mat frame) {
+	public Mat onCameraFrame(Mat frame) {
 		//Imgproc.resize(frame, frame, new Size(44, 36));
 		
 		if(_trackedBox != null){
@@ -135,10 +144,20 @@ public class TLDView extends OpenCvViewBase {
 				_currentGray.copyTo(_lastGray);
 			}
 		}
-		
-	    Bitmap bmp = Bitmap.createBitmap(frame.cols(), frame.rows(), Bitmap.Config.RGB_565/*.ARGB_8888*/);
-        Utils.matToBitmap(frame, bmp);
-        return bmp;
+
+        return frame;
+	}
+
+	
+	@Override
+	public void onCameraViewStarted(int width, int height) {
+    	_canvasImgXOffset = (getWidth() - width) / 2;
+    	_canvasImgYOffset = (getHeight() - height) / 2;
+	}
+
+	@Override
+	public void onCameraViewStopped() {
+		// TODO Auto-generated method stub
 	}
 	
 	
@@ -154,6 +173,5 @@ public class TLDView extends OpenCvViewBase {
 		if(box != null){
 			Core.rectangle(image, box.tl(), box.br(), colour);
 		}
-	}
-
+	}	
 }

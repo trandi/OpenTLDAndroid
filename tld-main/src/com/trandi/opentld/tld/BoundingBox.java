@@ -110,8 +110,8 @@ public class BoundingBox extends Rect{
 		final float s1 = 0.5f * (s - 1) * width;
 		final float s2 = 0.5f * (s - 1) * height;
 		final BoundingBox result = new BoundingBox();
-		result.x = Math.round(x + dx - s1);
-		result.y = Math.round(y + dy - s2);
+		result.x = Math.max(Math.round(x + dx - s1), 0);
+		result.y = Math.max(Math.round(y + dy - s2), 0);
 		result.width = Math.round(width * s);
 		result.height = Math.round(height * s);
 		

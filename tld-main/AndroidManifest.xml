@@ -3,7 +3,7 @@
     android:versionCode="1"
     android:versionName="1.0" >
 
-    <uses-sdk android:minSdkVersion="10" />
+    <uses-sdk android:minSdkVersion="16" android:targetSdkVersion="17"/>
 
     <uses-permission android:name="android.permission.CAMERA"/>
     <!-- Needed for the tracing file -->

@@ -21,13 +21,11 @@ import org.opencv.android.LoaderCallbackInterface;
 import org.opencv.android.OpenCVLoader;
 
 import android.app.Activity;
-import android.app.AlertDialog;
-import android.content.DialogInterface;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Menu;
+import android.view.SurfaceView;
 import android.view.Window;
-import android.widget.LinearLayout;
 
 import com.trandi.opentld.tld.Util;
 
@@ -41,43 +39,31 @@ public class MainActivity extends Activity {
 				case LoaderCallbackInterface.SUCCESS:
 				{
 					Log.i(Util.TAG, "OpenCV loaded successfully");
-
-					// Create and set View (replace the bogus one created by the main.xml layout)
-					_tldView = new TLDView(mAppContext);
-					((LinearLayout)findViewById(R.id.cameraFeedHolder)).addView(_tldView);
 					
-					// Check native OpenCV camera
-					if( !_tldView.openCamera() ) {
-						AlertDialog ad = new AlertDialog.Builder(mAppContext).create();
-						ad.setCancelable(false); // This blocks the 'BACK' button
-						ad.setMessage("Fatal error: can't open camera!");
-						ad.setButton("OK", new DialogInterface.OnClickListener() {
-						    public void onClick(DialogInterface dialog, int which) {
-						    	dialog.dismiss();
-						    	finish();
-						    }
-						});
-						ad.show();
-					}
+			        setContentView(R.layout.activity_main);
+			        
+					_tldView = (TLDView) findViewById(R.id.tld_view);
+					_tldView.setVisibility(SurfaceView.VISIBLE);
+					_tldView.enableView();
 				} break;
 				default:
 				{
+					Log.e(Util.TAG, "OpenCV can NOT be loaded");
 					super.onManagerConnected(status);
 				} break;
 			}
     	}
     };	
-	
-	
+
+    
+    /** Called when the activity is first created. */
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        setContentView(R.layout.activity_main);
-        
-        
+
         Log.i(Util.TAG, "Trying to load OpenCV library");
-        if (!OpenCVLoader.initAsync(OpenCVLoader.OPENCV_VERSION_2_4_2, this, _openCVCallBack)) {
+        if (!OpenCVLoader.initAsync(OpenCVLoader.OPENCV_VERSION_2_4_6, this, _openCVCallBack)) {
         	Log.e(Util.TAG, "Cannot connect to OpenCV Manager");
         }
     }    
