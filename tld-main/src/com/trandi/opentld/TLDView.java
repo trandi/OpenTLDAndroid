@@ -28,6 +28,7 @@ import org.opencv.core.Mat;
 import org.opencv.core.Point;
 import org.opencv.core.Rect;
 import org.opencv.core.Scalar;
+import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
 
 import android.content.Context;
@@ -41,7 +42,6 @@ import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.View;
 
-import com.trandi.opentld.tld.BoundingBox;
 import com.trandi.opentld.tld.Tld;
 import com.trandi.opentld.tld.Tld.ProcessFrameStruct;
 import com.trandi.opentld.tld.Util;
@@ -58,6 +58,10 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
 	private Rect _trackedBox = null;
 	private ProcessFrameStruct _processFrameStruct = null;
 	private Properties _tldProperties;
+	
+	private static final Size WORKING_FRAME_SIZE = new Size(108, 60);
+	private Mat _workingFrame = new Mat();
+	private String _errMessage;
 	
 	public TLDView(Context context, AttributeSet attrs) {
 		super(context, attrs);
@@ -98,54 +102,72 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
 		setOnTouchListener(new OnTouchListener() {
 			@Override
 			public boolean onTouch(View v, MotionEvent event) {
-				if(_trackedBox == null){
-					final Point corner = new Point(event.getX() - _canvasImgXOffset, event.getY() - _canvasImgYOffset);
-					switch(event.getAction()){
-					case MotionEvent.ACTION_DOWN:
-						trackedBox1stCorner.set(corner);
-						Log.i(Util.TAG, "1st corner: " + corner);
-						break;
-					case MotionEvent.ACTION_UP:
-						_trackedBox = new BoundingBox(trackedBox1stCorner.get(), corner);
-						Log.i(Util.TAG, "Tracked box DEFINED: " + _trackedBox);
-						break;
-					case MotionEvent.ACTION_MOVE:
-						final Canvas canvas =_holder.lockCanvas();
-						final android.graphics.Rect rect = new android.graphics.Rect(
-										(int)trackedBox1stCorner.get().x + _canvasImgXOffset, (int)trackedBox1stCorner.get().y + _canvasImgYOffset, 
-										(int)corner.x + _canvasImgXOffset, (int)corner.y + _canvasImgYOffset);
-						canvas.drawRect(rect, rectPaint);
-						_holder.unlockCanvasAndPost(canvas);
-						break;
-					}
+				// re-init
+				_errMessage = null;
+				_tld = null;
+				
+				final Point corner = new Point(event.getX() - _canvasImgXOffset, event.getY() - _canvasImgYOffset);
+				switch(event.getAction()){
+				case MotionEvent.ACTION_DOWN:
+					trackedBox1stCorner.set(corner);
+					Log.i(Util.TAG, "1st corner: " + corner);
+					break;
+				case MotionEvent.ACTION_UP:
+					_trackedBox = new Rect(trackedBox1stCorner.get(), corner);
+					Log.i(Util.TAG, "Tracked box DEFINED: " + _trackedBox);
+					break;
+				case MotionEvent.ACTION_MOVE:
+					final Canvas canvas =_holder.lockCanvas();
+					final android.graphics.Rect rect = new android.graphics.Rect(
+									(int)trackedBox1stCorner.get().x + _canvasImgXOffset, (int)trackedBox1stCorner.get().y + _canvasImgYOffset, 
+									(int)corner.x + _canvasImgXOffset, (int)corner.y + _canvasImgYOffset);
+					canvas.drawRect(rect, rectPaint);
+					_holder.unlockCanvasAndPost(canvas);
+					break;
 				}
+				
 				return true;
 			}
 		});
 	}
 
 	@Override
-	public Mat onCameraFrame(Mat frame) {
-		//Imgproc.resize(frame, frame, new Size(44, 36));
-		
-		if(_trackedBox != null){
-			if(_tld == null){ // run the 1st time only
-				Imgproc.cvtColor(frame, _lastGray, Imgproc.COLOR_RGB2GRAY);
-				_tld = new Tld(_tldProperties);
-				_tld.init(_lastGray, _trackedBox);
-			}else{
-				Imgproc.cvtColor(frame, _currentGray, Imgproc.COLOR_RGB2GRAY);
+	public Mat onCameraFrame(Mat originalFrame) {
+		try{
+			// Image is too big and this requires too much CPU for a phone, so scale everything down...
+			Imgproc.resize(originalFrame, _workingFrame, WORKING_FRAME_SIZE);
+			final Size workingRatio = new Size(originalFrame.width() / WORKING_FRAME_SIZE.width, originalFrame.height() / WORKING_FRAME_SIZE.height);
 			
-				_processFrameStruct = _tld.processFrame(_lastGray, _currentGray);
-				drawPoints(frame, _processFrameStruct.lastPoints, new Scalar(255, 0, 0));
-				drawPoints(frame, _processFrameStruct.currentPoints, new Scalar(0, 255, 0));
-				drawBox(frame, _processFrameStruct.currentBBox, new Scalar(0, 0, 255));
-					
-				_currentGray.copyTo(_lastGray);
+			if(_trackedBox != null){
+				if(_tld == null){ // run the 1st time only
+					Imgproc.cvtColor(_workingFrame, _lastGray, Imgproc.COLOR_RGB2GRAY);
+					_tld = new Tld(_tldProperties);
+					final Rect scaledDownTrackedBox = scaleDown(_trackedBox, workingRatio);
+					Log.i(Util.TAG, "Working Ration: " + workingRatio + " / Tracking Box: " + _trackedBox + " / Scaled down to: " + scaledDownTrackedBox);
+					_tld.init(_lastGray, scaledDownTrackedBox);
+				}else{
+					Imgproc.cvtColor(_workingFrame, _currentGray, Imgproc.COLOR_RGB2GRAY);
+				
+					_processFrameStruct = _tld.processFrame(_lastGray, _currentGray);
+					drawPoints(originalFrame, _processFrameStruct.lastPoints, workingRatio, new Scalar(255, 0, 0));
+					drawPoints(originalFrame, _processFrameStruct.currentPoints, workingRatio, new Scalar(0, 255, 0));
+					drawBox(originalFrame, scaleUp(_processFrameStruct.currentBBox, workingRatio), new Scalar(0, 0, 255));
+						
+					_currentGray.copyTo(_lastGray);
+				}
 			}
+		} catch(Throwable e) {
+	        _errMessage = e.getMessage();
+	        // start from scratch
+			_trackedBox = null;
+			_tld = null;
 		}
 
-        return frame;
+		if(_errMessage !=  null){
+			Core.putText(originalFrame, _errMessage, new Point(0, 300), Core.FONT_HERSHEY_PLAIN, 1.3d, new Scalar(255, 0, 0), 2);
+		}
+		
+        return originalFrame;
 	}
 
 	
@@ -161,17 +183,40 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
 	}
 	
 	
-	private static void drawPoints(Mat image, final Point[] points, final Scalar colour){
+	private static void drawPoints(Mat image, final Point[] points, final Size scale, final Scalar colour){
 		if(points != null){
 			for(Point point : points){
-				Core.circle(image, point, 2, colour);
+				Core.circle(image, scaleUp(point, scale), 2, colour);
 			}
 		}
 	}
 	
-	private static void drawBox(Mat image, final BoundingBox box, final Scalar colour){
+	private static void drawBox(Mat image, final Rect box, final Scalar colour){
 		if(box != null){
 			Core.rectangle(image, box.tl(), box.br(), colour);
 		}
-	}	
+	}
+	
+	
+	/* SCALING */
+	
+	private static Point scaleUp(Point point, Size scale){
+		if(point == null || scale == null) return null;
+		return new Point(point.x * scale.width, point.y * scale.height);
+	}
+	
+	private static Point scaleDown(Point point, Size scale){
+		if(point == null || scale == null) return null;
+		return new Point(point.x / scale.width, point.y / scale.height);
+	}
+	
+	private static Rect scaleUp(Rect rect, Size scale) {
+		if(rect == null || scale == null) return null;
+		return new Rect(scaleUp(rect.tl(), scale), scaleUp(rect.br(), scale));
+	}
+	
+	private static Rect scaleDown(Rect rect, Size scale) {
+		if(rect == null || scale == null) return null;
+		return new Rect(scaleDown(rect.tl(), scale), scaleDown(rect.br(), scale));
+	}
 }

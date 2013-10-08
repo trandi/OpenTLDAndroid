@@ -16,7 +16,6 @@
 
 package com.trandi.opentld.tld;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 
@@ -32,13 +31,10 @@ import com.trandi.opentld.tld.Util.RNG;
 
 class FernEnsembleClassifier {
 	ParamsClassifiers params;
-	private Feature[][][] features; // per scale and per fern
-	private double[][] posteriorProbabilities;	//Ferns posteriors
-	private long[][] nCounter;  	//for each fern and each hashcode the number of NEGATIVE patches
-	private long[][] pCounter;		//for each fern and each hashcode the number of POSITIVE patches
+	private Fern[] ferns;
 	
-	final List<Mat> pExamples = new ArrayList<Mat>();
-	final List<Mat> nExamples = new ArrayList<Mat>();
+//	final List<Mat> pExamples = new ArrayList<Mat>();
+//	final List<Mat> nExamples = new ArrayList<Mat>();
 
 	FernEnsembleClassifier(){
 	}
@@ -47,46 +43,22 @@ class FernEnsembleClassifier {
 		params = new ParamsClassifiers(props);
 	}
 
-	/**
-	 * Generate pixel comparisons
-	 */
-	void prepare(Size[] scales, RNG rng){
-		//Initialise test locations for features
-		features = new Feature[scales.length][params.numFerns][params.numFeaturesPerFern];
-		float x1f, x2f, y1f, y2f;
-		int x1, x2, y1, y2;
-		 
-		for (int i=0; i<params.numFeaturesPerFern; i++){
-			for(int j=0; j<params.numFerns; j++){
-				x1f = rng.nextFloat();
-				y1f = rng.nextFloat();
-				x2f = rng.nextFloat();
-				y2f = rng.nextFloat();
-				for (int s=0; s<scales.length; s++){
-					x1 = (int) (x1f * scales[s].width);
-					y1 = (int) (y1f * scales[s].height);
-					x2 = (int) (x2f * scales[s].width);
-					y2 = (int) (y2f * scales[s].height);
-					features[s][j][i] = new Feature(x1, y1, x2, y2);
-				}
-			}
-		}
-		
 
-		//Initialise Posteriors
-		final int MAX_HASHCODE = (int)Math.pow(2d, params.numFeaturesPerFern);
-		posteriorProbabilities = new double[params.numFerns][MAX_HASHCODE];
-		pCounter = new long[params.numFerns][MAX_HASHCODE];
-		nCounter = new long[params.numFerns][MAX_HASHCODE];
+	void init(Size[] scales, RNG rng){
+		ferns = new Fern[params.numFerns];
+		for(int i=0; i<ferns.length; i++){
+			ferns[i] = new Fern(params.numFeaturesPerFern, scales, rng);
+		}
 	}
 	
 	
 	/**
 	 * Updates the POSITIVE Ferns
-	 * The averagePosterior threshold for Positive results has to be > to the negative one.
+	 * The threshold for Positive results has to be > to the average of negative posteriors
 	 */
 	void evaluateThreshold(final List<Pair<int[], Boolean>> nFernsTest){
 		for(Pair<int[], Boolean> fern : nFernsTest){
+			// here we know/hope that fern.second is always FALSE, as they are all NEGATIVE examples
 			final double averagePosterior = averagePosterior(fern.first);
 			if(averagePosterior > params.pos_thr_fern){
 				params.pos_thr_fern = averagePosterior;
@@ -98,6 +70,7 @@ class FernEnsembleClassifier {
 	void trainF(final List<Pair<int[], Boolean>> ferns, int resample){
 		for(int i = 0; i < resample; i++){
 			for(Pair<int[], Boolean> fern : ferns){
+				// the THRESHOLDS are here to make sure we don't increase/decrease the probabilities beyond given limits, to give other hashCodes a chance
 				if(fern.second){ // if it's a positive fern
 					if(averagePosterior(fern.first) <= params.pos_thr_fern){
 						updatePosteriors(fern.first, true);
@@ -113,14 +86,7 @@ class FernEnsembleClassifier {
 		assert(params.numFerns == fernsHashCodes.length);
 		
 		for(int fern = 0; fern < fernsHashCodes.length; fern++){
-			final int fernHashCode = fernsHashCodes[fern];
-			if(positive){
-				pCounter[fern][fernHashCode] ++;
-			}else{
-				nCounter[fern][fernHashCode] ++;
-			}
-			
-			posteriorProbabilities[fern][fernHashCode] = ((double)pCounter[fern][fernHashCode]) / (pCounter[fern][fernHashCode] + nCounter[fern][fernHashCode]);
+			ferns[fern].addCountUpdatePosteriors(fernsHashCodes[fern], positive);
 		}
 	}
 	
@@ -133,7 +99,7 @@ class FernEnsembleClassifier {
 		
 		double result = 0;
 		for(int fern = 0; fern < fernsHashCodes.length; fern++){
-			result += posteriorProbabilities[fern][fernsHashCodes[fern]];
+			result += ferns[fern].posteriorProbabilities[fernsHashCodes[fern]];
 		}
 		return result / fernsHashCodes.length;
 	}
@@ -143,22 +109,71 @@ class FernEnsembleClassifier {
 	 * The numbers in this array can be up to 2^params.structSize as we shift left once of each feature
 	 */
 	int[] getAllFernsHashCodes(final Mat patch, int scaleIdx){
-		final int[] result = new int[params.numFerns];
+		final int[] result = new int[ferns.length];
 		final byte[] imageData = Util.getByteArray(patch);
 		final int cols = patch.cols();
-		for(int fern = 0; fern < params.numFerns; fern++){
-			int fernHashCode = 0;
-			for(int feature = 0; feature < params.numFeaturesPerFern; feature++){
-				// compare returns 0 / 1 and 
-				fernHashCode = (fernHashCode << 1) + features[scaleIdx][fern][feature].compare(imageData, cols);
-			}
-			result[fern] = fernHashCode;
+		for(int fern = 0; fern < ferns.length; fern++){
+			result[fern] = ferns[fern].calculateHashCode(scaleIdx, imageData, cols);
 		}
 		
 		return result;
 	}
 
 
+	
+	static class Fern {
+		private final Feature[][] features; // per scaleIdx
+		// per HASHCODE
+		final double[] posteriorProbabilities;	// the probability that it's our image
+		final long[] nCounter;  	// the number of NEGATIVE patches
+		final long[] pCounter;		// the number of POSITIVE patches
+		
+		
+		Fern(int featuresPerFern, Size[] scales, RNG rng) {
+			// 1. Define random features
+			features = new Feature[scales.length][featuresPerFern];
+			for (int i=0; i<featuresPerFern; i++){
+				final float x1f = rng.nextFloat();
+				final float y1f = rng.nextFloat();
+				final float x2f = rng.nextFloat();
+				final float y2f = rng.nextFloat();
+				for (int s=0; s<scales.length; s++){
+					final int x1 = (int) (x1f * scales[s].width);
+					final int y1 = (int) (y1f * scales[s].height);
+					final int x2 = (int) (x2f * scales[s].width);
+					final int y2 = (int) (y2f * scales[s].height);
+					features[s][i] = new Feature(x1, y1, x2, y2);
+				}
+			}			
+			
+			// 2. Initialise Posteriors
+			final int MAX_HASHCODE = (int)Math.pow(2d, featuresPerFern);
+			posteriorProbabilities = new double[MAX_HASHCODE];
+			pCounter = new long[MAX_HASHCODE];
+			nCounter = new long[MAX_HASHCODE];
+		}
+		
+		void addCountUpdatePosteriors(int fernHashCode, boolean positive) {
+			if(positive){
+				pCounter[fernHashCode] ++;
+			}else{
+				nCounter[fernHashCode] ++;
+			}
+			
+			posteriorProbabilities[fernHashCode] = ((double)pCounter[fernHashCode]) / (pCounter[fernHashCode] + nCounter[fernHashCode]);
+		}
+		
+		
+		int calculateHashCode(int scaleIdx, byte[] imageData, int cols) {
+			int fernHashCode = 0;
+			for(Feature feature : features[scaleIdx]){
+				// compare returns 0 / 1 and 
+				fernHashCode = (fernHashCode << 1) + feature.compare(imageData, cols);
+			}
+			
+			return fernHashCode;
+		}
+	}
 	
 	
 	/**
@@ -175,7 +190,8 @@ class FernEnsembleClassifier {
 		}
 
 		/**
-		 * Assumes channels = 1 (hence only multiplying with cols)
+		 * Simply compares the brightness between the 2 points defining this Feature
+		 * Assumes channels = 1 (hence only multiplying with cols).
 		 */
 		public int compare(final byte[] patch, final int cols) {
 			final int pos1 = y1 * cols + x1;
@@ -200,7 +216,7 @@ class FernEnsembleClassifier {
 		return params.numFerns;
 	}
 	
-	double getFernThreshold(){
+	double getFernPosThreshold(){
 		return params.pos_thr_fern;
 	}
 	

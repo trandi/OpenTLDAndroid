@@ -77,7 +77,7 @@ public class Tld {
 	private boolean _learn = true;
 	
 	// Detector data
-	private Map<BoundingBox, TempStruct> _tmpDetectData = new HashMap<BoundingBox, Tld.TempStruct>();
+	private Map<BoundingBox, int[]> _fernDetectionNegDataForLearning = new HashMap<BoundingBox, int[]>(); // all ferns hash codes for a given bounding box
 	final Map<BoundingBox, Integer> _boxClusterMap = new HashMap<BoundingBox, Integer>();
 	
 	// Bounding Boxes Grid
@@ -101,6 +101,7 @@ public class Tld {
 
 	public void init(Mat frame1, Rect trackedBox){
 		// get Bounding boxes
+		if(Math.min(trackedBox.width, trackedBox.height) < _params.min_win) throw new IllegalArgumentException("Provided trackedBox: " + trackedBox + " is too small (min " + _params.min_win + ")");
 		_grid = new Grid(frame1, trackedBox, _params.min_win);
 		Log.i(Util.TAG, "Init Created " + _grid.getSize() + " bounding boxes.");
 		
@@ -114,7 +115,7 @@ public class Tld {
 		// correct bounding box
 		_lastbox = _grid.getBestBox();
 		
-		_classifierFern.prepare(_grid.getTrackedBoxScales(), _rng);
+		_classifierFern.init(_grid.getTrackedBoxScales(), _rng);
 		
 		
 		// generate DATA
@@ -172,17 +173,13 @@ public class Tld {
 		// 1. TRACK
 		TrackingStruct trackingStruct = null;
 		if(_lastbox != null){
-			//long start = System.currentTimeMillis();
 			trackingStruct = track(lastImg, currentImg, _lastbox);
-			//Log.i(Util.TAG, "TRACK: " + (System.currentTimeMillis() - start));
 		}
 		
 			
 		
 		// 2. DETECT
-		//start = System.currentTimeMillis();
 		final Pair<List<DetectionStruct>, List<DetectionStruct>> detStructs = detect(currentImg);
-		//Log.i(Util.TAG, "DETECT: " + (System.currentTimeMillis() - start));
 		
 		// 3. INTEGRATION tracking with detection
 		if(trackingStruct != null){
@@ -249,9 +246,7 @@ public class Tld {
 		
 		// 4. LEARN
 		if(_learn){
-			//start = System.currentTimeMillis();
 			_learn = learn(currentImg, detStructs != null ? detStructs.first : null); // use the Fern classifier detected
-			//Log.i(Util.TAG, "LEARN: " + (System.currentTimeMillis() - start));
 		}else{
 			Log.i(Util.TAG, "NOT Learning");
 		}
@@ -339,7 +334,6 @@ public class Tld {
 		Imgproc.GaussianBlur(frame, img, new Size(9, 9), 1.5);
 		
 		// Apply the Variance filter TODO : Bottleneck
-		final long start = System.currentTimeMillis();
 		int a=0;
 		for(BoundingBox box : _grid){
 			// a) speed up by doing the features/ferns check ONLY if the variance is high enough !
@@ -348,15 +342,12 @@ public class Tld {
 				final Mat patch = img.submat(box);
 				final int[] allFernsHashCodes = _classifierFern.getAllFernsHashCodes(patch, box.scaleIdx);
 				final double averagePosterior = _classifierFern.averagePosterior(allFernsHashCodes);
-				_tmpDetectData.put(box,  new TempStruct(averagePosterior, allFernsHashCodes));// store for later use in learning
+				_fernDetectionNegDataForLearning.put(box,  allFernsHashCodes);// store for later use in learning
 				
 				// b)
-				if(averagePosterior > _classifierFern.getFernThreshold()){
+				if(averagePosterior > _classifierFern.getFernPosThreshold()){
 					fernClassDetected.add(new DetectionStruct(box, allFernsHashCodes, averagePosterior, patch));
 				}
-			}else{
-				// too small variance, nothing detected
-				_tmpDetectData.put(box,  new TempStruct(0f, null));// store for later use in learning
 			}
 		}
 		
@@ -421,11 +412,13 @@ public class Tld {
 			return false;
 		}
 		
+		// TODO why don't we learn from the GOOD boxes too !?
 		final List<Pair<int[], Boolean>> fernExamples = new ArrayList<Util.Pair<int[], Boolean>>(_pFerns);
 		for(BoundingBox badBox : _grid.getBadBoxes()){
-			final TempStruct tempStruct = _tmpDetectData.get(badBox);
-			if(tempStruct != null && tempStruct.averagePosterior >= 1){
-				fernExamples.add(new Pair<int[], Boolean>(tempStruct.pattern, false));
+			final int[] allFernsHashCodes = _fernDetectionNegDataForLearning.get(badBox);
+			if(allFernsHashCodes != null){
+				// these are NEGATIVE examples !
+				fernExamples.add(new Pair<int[], Boolean>(allFernsHashCodes, false));
 			}
 		}
 		
@@ -621,8 +614,8 @@ public class Tld {
 		for(BoundingBox badBox : badBoxes){
 			if(Util.getVar(badBox, _iisumJava, _iisqsumJava, _iiCols) >= _var * 0.5f){
 				final Mat patch = frame.submat(badBox);
-				final int[] fern = _classifierFern.getAllFernsHashCodes(patch, badBox.scaleIdx);
-				negFerns.add(new Pair<int[], Boolean>(fern, false));
+				final int[] allFernsHashCodes = _classifierFern.getAllFernsHashCodes(patch, badBox.scaleIdx);
+				negFerns.add(new Pair<int[], Boolean>(allFernsHashCodes, false));
 			}
 		}
 		
@@ -672,8 +665,8 @@ public class Tld {
 			final BoundingBox[] goodBoxes = aGrid.getGoodBoxes();
 			for(BoundingBox goodBox : goodBoxes){
 				final Mat patch = img.submat(goodBox);
-				final int[] fern = _classifierFern.getAllFernsHashCodes(patch, goodBox.scaleIdx);
-				_pFerns.add(new Pair<int[], Boolean>(fern, true));
+				final int[] allFernsHashCodes = _classifierFern.getAllFernsHashCodes(patch, goodBox.scaleIdx);
+				_pFerns.add(new Pair<int[], Boolean>(allFernsHashCodes, true));
 			}
 		}
 		
@@ -730,15 +723,6 @@ public class Tld {
 		}
 	}
 	
-	private static final class TempStruct {
-		public final double averagePosterior;
-		public final int[] pattern;
-		
-		TempStruct(double averagePosterior2, int[] pattern){
-			this.averagePosterior = averagePosterior2;
-			this.pattern = pattern;
-		}
-	}
 	
 	public static final class ProcessFrameStruct {
 		public final Point[] lastPoints;
