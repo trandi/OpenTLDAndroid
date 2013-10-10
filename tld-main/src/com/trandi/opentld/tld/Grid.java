@@ -72,7 +72,6 @@ class Grid implements Iterable<BoundingBox>{
 						bbox.width = width;
 						bbox.height = height;
 						bbox.scaleIdx = trackedBoxScales.size() - 1; // currently last one in this list
-						bbox.overlap = bbox.calcOverlap(trackedBox);
 						
 						grid.add(bbox);
 					}
@@ -85,13 +84,18 @@ class Grid implements Iterable<BoundingBox>{
 	/**
 	 * goodBoxes OUTPUT
 	 * badBoxes OUTPUT
+	 * 
+	 * This should be called AFTER updateOverlap(lastBox) so that the overlap numbers are relative to this lastBox, NOT the initial one...
 	 */
-	void updateGoodBadBoxes(final int numClosest){
+	void updateGoodBadBoxes(final Rect trackedBox, final int numClosest) {
+		// start by updating the overlap numbers
+		for(BoundingBox box : grid){
+			box.overlap = box.calcOverlap(trackedBox);
+		}		
+		
 		goodBoxes.clear();
 		badBoxes.clear();
 		
-		//TODO we use the same overlap that was calculated initially, with the initial trackedBox
-		// but if this is called later no, that tracked box is meaningless !
 		float maxOverlap = 0f;
 		for(BoundingBox box : grid){
 			if(box.overlap > maxOverlap){
@@ -137,12 +141,6 @@ class Grid implements Iterable<BoundingBox>{
 		bbHull.y = y1;
 		bbHull.width = x2 - x1;
 		bbHull.height = y2 - y1;
-	}
-	
-	void updateOverlap(final BoundingBox lastBox){
-		for(BoundingBox box : grid){
-			box.overlap = box.calcOverlap(lastBox);
-		}
 	}
 	
 	

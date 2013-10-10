@@ -69,7 +69,7 @@ public class Tld {
 	
 	// Training data
 	Mat _pExample = new Mat(); // positive NN example
-	final List<Pair<int[], Boolean>> _pFerns = new ArrayList<Pair<int[], Boolean>>();	//positive ferns <features,labels=true>
+	final List<Pair<int[], Boolean>> _pFerns = new ArrayList<Pair<int[], Boolean>>();	//positive ferns <allFernsHashCodes, true>
 	private List<Mat> _nExamples;
 
 	// Last frame data
@@ -78,7 +78,7 @@ public class Tld {
 	
 	// Detector data
 	private Map<BoundingBox, int[]> _fernDetectionNegDataForLearning = new HashMap<BoundingBox, int[]>(); // all ferns hash codes for a given bounding box
-	final Map<BoundingBox, Integer> _boxClusterMap = new HashMap<BoundingBox, Integer>();
+	final Map<DetectionStruct, Integer> _boxClusterMap = new HashMap<DetectionStruct, Integer>();	// the cluster to which each detected box belongs
 	
 	// Bounding Boxes Grid
 	Grid _grid;
@@ -99,18 +99,19 @@ public class Tld {
 		// for TESTING only
 	}
 
-	public void init(Mat frame1, Rect trackedBox){
+	public void init(Mat frame1, Rect trackedBox) {
 		// get Bounding boxes
-		if(Math.min(trackedBox.width, trackedBox.height) < _params.min_win) throw new IllegalArgumentException("Provided trackedBox: " + trackedBox + " is too small (min " + _params.min_win + ")");
+		if(Math.min(trackedBox.width, trackedBox.height) < _params.min_win) {
+			throw new IllegalArgumentException("Provided trackedBox: " + trackedBox + " is too small (min " + _params.min_win + ")");
+		}
 		_grid = new Grid(frame1, trackedBox, _params.min_win);
 		Log.i(Util.TAG, "Init Created " + _grid.getSize() + " bounding boxes.");
+		_grid.updateGoodBadBoxes(trackedBox, _params.num_closest_init);
 		
 		_iiRows = frame1.rows();
 		_iiCols = frame1.cols();
 		_iisum.create(_iiRows, _iiCols, CvType.CV_32F);
 		_iisqsum.create(_iiRows, _iiCols, CvType.CV_64F);
-			
-		_grid.updateGoodBadBoxes(_params.num_closest_init);
 		
 		// correct bounding box
 		_lastbox = _grid.getBestBox();
@@ -193,7 +194,7 @@ public class Tld {
 			
 			Log.i(Util.TAG, "Tracked");
 			if(detStructs != null){
-				final Map<BoundingBox, Float> clusters = clusterConfidentIndices(_classifierNN.getNnValidBoxes(detStructs.second));// cluster detections
+				final Map<BoundingBox, Float> clusters = clusterConfidentIndices(detStructs.second);// cluster detections
 				Log.i(Util.TAG, "Found " + clusters.size() + " clusters");
 				final Map<BoundingBox, Float> confidentClusters = new HashMap<BoundingBox, Float>();
 				for(BoundingBox clusterBox : clusters.keySet()){
@@ -203,13 +204,14 @@ public class Tld {
 					}
 				}
 				
-				if(confidentClusters.size() == 1){
+				if(confidentClusters.size() == 0){
+					Log.i(Util.TAG, "NO NN confident cluster !");
+				}else if(confidentClusters.size() == 1){
 					Log.i(Util.TAG, "Detected better match (1 confident cluster), re-initialising tracker");
 					_lastbox = confidentClusters.keySet().iterator().next(); //bbnext
 					_learn = false;
 				}else{
-					// Plenty of confident clusters detected
-					// Get mean of close detections (use nnMatches)
+					Log.i(Util.TAG, "Plenty of confident clusters detected. Get mean of close detections (use nnMatches)");
 					int cx=0,cy=0,cw=0,ch=0, close_detections=0;
 					for(DetectionStruct detStruct : detStructs.second){
 						if(trackingStruct.predictedBB.calcOverlap(detStruct.detectedBB) > 0.7){
@@ -235,7 +237,7 @@ public class Tld {
 			_lastbox = null;
 			_learn = false;
 			if(detStructs != null){  // and detector is defined
-				final Map<BoundingBox, Float> clusters = clusterConfidentIndices(_classifierNN.getNnValidBoxes(detStructs.second));// cluster detections
+				final Map<BoundingBox, Float> clusters = clusterConfidentIndices(detStructs.second);// cluster detections
 				if(clusters.size() == 1){
 					// not tracking but detected exactly 1 cluster -> use this one as the best option
 					_lastbox = clusters.keySet().iterator().next();
@@ -297,7 +299,7 @@ public class Tld {
 		// estimate Confidence
 		Mat pattern = new Mat();
 		try{
-		getPattern(currentImg.submat(predictedBB.intersect(currentImg)), pattern);
+			resizeZeroMeanStdev(currentImg.submat(predictedBB.intersect(currentImg)), pattern, _params.patch_size);
 		}catch(Throwable t){
 			Log.e(Util.TAG, "PredBB when failed: " + predictedBB);
 		}
@@ -370,9 +372,12 @@ public class Tld {
 		// 2. MATCHING using the NN classifier  c)
 		for(DetectionStruct detStruct : fernClassDetected){
 			// update detStruct.patch to params.patch_size and normalise it
-			getPattern(detStruct.patch, detStruct.patch); // surprisingly this seems to work even if it's a transformation onto itself !
+			Mat pattern = new Mat();
+			resizeZeroMeanStdev(detStruct.patch, pattern, _params.patch_size);
+			detStruct.nnConf = _classifierNN.nnConf(pattern);
 			
-			detStruct.nnConf = _classifierNN.nnConf(detStruct.patch);
+			Log.i(Util.TAG, "NNConf: " + detStruct.nnConf.relativeSimilarity + " / " + detStruct.nnConf.conservativeSimilarity + " Threshold: " + _classifierNN.getNNThreshold());
+			// only keep valid boxes
 			if(detStruct.nnConf.relativeSimilarity > _classifierNN.getNNThreshold()){
 				nnMatches.add(detStruct); 
 			}
@@ -386,7 +391,7 @@ public class Tld {
 	private boolean learn(final Mat img, final List<DetectionStruct> fernClassDetected){
 		Log.i(Util.TAG, "[LEARN]");
 		Mat pattern = new Mat();
-		final double stdev = getPattern(img.submat(_lastbox.intersect(img)), pattern);
+		final double stdev = resizeZeroMeanStdev(img.submat(_lastbox.intersect(img)), pattern, _params.patch_size);
 		final NNConfStruct confStruct = _classifierNN.nnConf(pattern);
 		
 		if(confStruct.relativeSimilarity < 0.5){
@@ -403,8 +408,7 @@ public class Tld {
 		}
 		
 		// Data generation
-		_grid.updateOverlap(_lastbox);
-		_grid.updateGoodBadBoxes(_params.num_closest_update);
+		_grid.updateGoodBadBoxes(_lastbox, _params.num_closest_update);
 		if(_grid.getGoodBoxes().length > 0){
 			generatePositiveData(img,  _params.num_warps_update, _grid);
 		}else{
@@ -446,45 +450,46 @@ public class Tld {
 	 * @param conservativeSimilarities
 	 * @return Map of clusters' boxes and their confidence
 	 */
-	private Map<BoundingBox, Float> clusterConfidentIndices(final Map<BoundingBox, Float> conservativeSimilarities){
+	private Map<BoundingBox, Float> clusterConfidentIndices(final List<DetectionStruct> conservativeSimilarities){
 		final int numbb = conservativeSimilarities.size();
+		if(numbb == 0){
+			Log.i(Util.TAG, "NO conservative similarities provided, NOTHING to cluster.");
+			return new HashMap<BoundingBox, Float>(); // empty result
+		}
+		
 		
 		// by default there is only 1 cluster, and ALL boxes are in it (0)
 		int clusters = 1;
-		for(BoundingBox box : conservativeSimilarities.keySet()){
-			_boxClusterMap.put(box, 0);
+		for(DetectionStruct detStruct : conservativeSimilarities){
+			_boxClusterMap.put(detStruct, 0);
 		}
 		
+		
 		if(numbb == 1){
-			final BoundingBox bBox = conservativeSimilarities.keySet().iterator().next();
-			return Collections.singletonMap(bBox, conservativeSimilarities.get(bBox));
+			return Collections.singletonMap(conservativeSimilarities.get(0).detectedBB, conservativeSimilarities.get(0).nnConf.conservativeSimilarity);
 		}else if(numbb == 2){
-			final Iterator<BoundingBox> it = conservativeSimilarities.keySet().iterator();
-			final BoundingBox bBox1 = it.next();
-			final BoundingBox bBox2 = it.next();
-			if(bBox1.calcOverlap(bBox2) < 0.5){
-				// 2nd box is in its own cluster
-				_boxClusterMap.put(bBox2, 1);
+			if(conservativeSimilarities.get(0).detectedBB.calcOverlap(conservativeSimilarities.get(1).detectedBB) < 0.5){
+				// 2nd box is in its own cluster, update
+				_boxClusterMap.put(conservativeSimilarities.get(1), 1);
 				clusters = 2;
 			}
 		}else {
-			// TODO populate boxClusterMap with the right clusters !!!!
-			//clusters = clusterBB();
+			clusters = clusterBB();
 		}
 		
 		final Map<BoundingBox, Float> result = new HashMap<BoundingBox, Float>();
 		
 		for(int cluster = 0; cluster < clusters; cluster++){
-			float clusterConf = 0f;
+			float avgConservativeSimilarity = 0f;
 			int clusterBoxCount = 0, mx=0, my=0, mw=0, mh=0;
 			
-			for(BoundingBox box : _boxClusterMap.keySet()){
-				if(_boxClusterMap.get(box) == cluster){
-					clusterConf += conservativeSimilarities.get(box);
-					mx += box.x;
-					my += box.y;
-					mw += box.width;
-					mh += box.height;
+			for(DetectionStruct detStruct : _boxClusterMap.keySet()){
+				if(_boxClusterMap.get(detStruct) == cluster){
+					avgConservativeSimilarity += detStruct.nnConf.conservativeSimilarity;
+					mx += detStruct.detectedBB.x;
+					my += detStruct.detectedBB.y;
+					mw += detStruct.detectedBB.width;
+					mh += detStruct.detectedBB.height;
 					clusterBoxCount++;
 				}
 			}
@@ -496,7 +501,7 @@ public class Tld {
 				clusterBox.width = mw / clusterBoxCount;
 				clusterBox.height = mh / clusterBoxCount;
 				
-				result.put(clusterBox, clusterConf / clusterBoxCount);
+				result.put(clusterBox, avgConservativeSimilarity / clusterBoxCount);
 			}
 		}
 		
@@ -504,94 +509,94 @@ public class Tld {
 	}
 	
 	
-//	/**
-//	 * @param boxClusterMap OUTPUT
-//	 * @return Total clusters count
-//	 */
-//	private int clusterBB(){
-//		final int size = boxClusterMap.size();
-//		// need the data in arrays
-//		final BoundingBox[] dbb = boxClusterMap.keySet().toArray(new BoundingBox[size]);
-//		final int[] indexes = new int[size];
-//		for(int i = 0; i < size; i++){
-//			indexes[i] = boxClusterMap.get(dbb[i]);
-//		}
-//		
-//		// 1. Build proximity matrix
-//		final float[] data = new float[size * size];
-//		for(int i = 0; i < size; i++){
-//			for(int j = 0; j < size; j++){
-//				final float d = 1 - dbb[i].calcOverlap(dbb[j]);
-//				data[i * size + j] = d;
-//				data[j * size + i] = d;
-//			}
-//		}
-//		Mat D = new Mat(size, size, CvType.CV_32F);
-//		D.put(0, 0, data);
-//		
-//		// 2. Initialise disjoint clustering
-//		final int[] belongs = new int[size];
-//		int m = size;
-//		for(int i = 0; i < size; i++){
-//			belongs[i] = i;
-//		}
-//		
-//
-//		for(int it = 0; it < size - 1; it++){
-//			//3. Find nearest neighbour
-//			float min_d = 1;
-//			int node_a = -1, node_b = -1;
-//			for (int i = 0; i < D.rows(); i++){
-//				for (int j = i + 1 ;j < D.cols(); j++){
-//					if (data[i * size + j] < min_d && belongs[i] != belongs[j]){
-//						min_d = data[i * size + j];
-//						node_a = i;
-//						node_b = j;
-//					}
-//				}
-//			}
-//			
-//			// are we done ?
-//			if (min_d > 0.5){
-//				int max_idx =0;
-//				for (int j = 0; j < size; j++){
-//					boolean visited = false;
-//					for(int i = 0; i < 2 * size - 1; i++){
-//						if (belongs[j] == i){
-//							// populate the correct / aggregated cluster
-//							indexes[j] = max_idx;
-//							visited = true;
-//						}
-//					}
-//					
-//					if (visited){
-//						max_idx++;
-//					}
-//				}
-//				
-//				// update the main map before going back
-//				for(int i = 0; i < size; i++){
-//					boxClusterMap.put(dbb[i], indexes[i]);
-//				}
-//				return max_idx;
-//			}
-//
-//			//4. Merge clusters and assign level
-//			if(node_a >= 0 && node_b >= 0){  // this should always BE true, otherwise we would have returned
-//				for (int k = 0; k < size; k++){
-//					if (belongs[k] == belongs[node_a] || belongs[k] == belongs[node_b])
-//						belongs[k] = m;
-//				}
-//				m++;
-//			}
-//		}
-//		
-//		// there seem to be only 1 cluster
-//		for(int i = 0; i < size; i++){
-//			boxClusterMap.put(dbb[i], 0);
-//		}
-//		return 1;
-//	}
+	/**
+	 * @param boxClusterMap INPUT / OUTPUT
+	 * @return Total clusters count
+	 */
+	private int clusterBB(){
+		final int size = _boxClusterMap.size();
+		// need the data in arrays
+		final DetectionStruct[] dbb = _boxClusterMap.keySet().toArray(new DetectionStruct[size]);
+		final int[] indexes = new int[size];
+		for(int i = 0; i < size; i++){
+			indexes[i] = _boxClusterMap.get(dbb[i]);
+		}
+		
+		// 1. Build proximity matrix
+		final float[] data = new float[size * size];
+		for(int i = 0; i < size; i++){
+			for(int j = 0; j < size; j++){
+				final float d = 1 - dbb[i].detectedBB.calcOverlap(dbb[j].detectedBB);
+				data[i * size + j] = d;
+				data[j * size + i] = d;
+			}
+		}
+		Mat D = new Mat(size, size, CvType.CV_32F);
+		D.put(0, 0, data);
+		
+		// 2. Initialise disjoint clustering
+		final int[] belongs = new int[size];
+		int m = size;
+		for(int i = 0; i < size; i++){
+			belongs[i] = i;
+		}
+		
+
+		for(int it = 0; it < size - 1; it++){
+			//3. Find nearest neighbour
+			float min_d = 1;
+			int node_a = -1, node_b = -1;
+			for (int i = 0; i < D.rows(); i++){
+				for (int j = i + 1 ;j < D.cols(); j++){
+					if (data[i * size + j] < min_d && belongs[i] != belongs[j]){
+						min_d = data[i * size + j];
+						node_a = i;
+						node_b = j;
+					}
+				}
+			}
+			
+			// are we done ?
+			if (min_d > 0.5){
+				int max_idx =0;
+				for (int j = 0; j < size; j++){
+					boolean visited = false;
+					for(int i = 0; i < 2 * size - 1; i++){
+						if (belongs[j] == i){
+							// populate the correct / aggregated cluster
+							indexes[j] = max_idx;
+							visited = true;
+						}
+					}
+					
+					if (visited){
+						max_idx++;
+					}
+				}
+				
+				// update the main map before going back
+				for(int i = 0; i < size; i++){
+					_boxClusterMap.put(dbb[i], indexes[i]);
+				}
+				return max_idx;
+			}
+
+			//4. Merge clusters and assign level
+			if(node_a >= 0 && node_b >= 0){  // this should always BE true, otherwise we would have returned
+				for (int k = 0; k < size; k++){
+					if (belongs[k] == belongs[node_a] || belongs[k] == belongs[node_b])
+						belongs[k] = m;
+				}
+				m++;
+			}
+		}
+		
+		// there seem to be only 1 cluster
+		for(int i = 0; i < size; i++){
+			_boxClusterMap.put(dbb[i], 0);
+		}
+		return 1;
+	}
 	
 	
 	/** Inputs:
@@ -624,7 +629,7 @@ public class Tld {
 		for(int i = 0; i < _params.num_bad_patches && bbIt.hasNext(); i++){
 			final Mat pattern = new Mat();
 			final Mat patch = frame.submat(bbIt.next());
-			getPattern(patch, pattern);
+			resizeZeroMeanStdev(patch, pattern, _params.patch_size);
 			negExamples.add(pattern);
 		}
 		
@@ -644,7 +649,7 @@ public class Tld {
 	 * - Positive NN examples (pExample)
 	 */
 	void generatePositiveData(final Mat frame, final int numWarps, final Grid aGrid) {
-		getPattern(frame.submat(aGrid.getBestBox()), _pExample);
+		resizeZeroMeanStdev(frame.submat(aGrid.getBestBox()), _pExample, _params.patch_size);
 		//Get Fern features on warped patches
 		final Mat img = new Mat();
 		Imgproc.GaussianBlur(frame, img, new Size(9, 9), 1.5);
@@ -676,20 +681,20 @@ public class Tld {
 	
 	/**
 	 * Output: resized zero-mean patch/pattern
-	 * @param pattern OUTPUT
+	 * @param inImg INPUT, outPattern OUTPUT
 	 * @return stdev
 	 */
-	double getPattern(final Mat img, Mat pattern){
-		if(img == null || pattern == null){
+	private static double resizeZeroMeanStdev(final Mat inImg, Mat outPattern, int patternSize){
+		if(inImg == null || outPattern == null){
 			return -1;
 		}
 		
-		Imgproc.resize(img, pattern, new Size(_params.patch_size, _params.patch_size));
+		Imgproc.resize(inImg, outPattern, new Size(patternSize, patternSize));
 		final MatOfDouble mean = new MatOfDouble();
 		final MatOfDouble stdev = new MatOfDouble();
-		Core.meanStdDev(pattern, mean, stdev);
-		pattern.convertTo(pattern, CvType.CV_32F);
-		Core.subtract(pattern, new Scalar(mean.toArray()[0]), pattern);
+		Core.meanStdDev(outPattern, mean, stdev);
+		outPattern.convertTo(outPattern, CvType.CV_32F);
+		Core.subtract(outPattern, new Scalar(mean.toArray()[0]), outPattern);
 		
 		return stdev.toArray()[0];
 	}

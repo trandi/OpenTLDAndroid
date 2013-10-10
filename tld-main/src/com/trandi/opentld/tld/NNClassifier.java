@@ -119,19 +119,6 @@ public class NNClassifier {
 	}
 	
 	
-	/**
-	 * @return Those boxes that pass the Nearest neighbour test/threshold, and their Conservative confidence
-	 */
-	Map<BoundingBox, Float> getNnValidBoxes(final List<DetectionStruct> list) {
-		final Map<BoundingBox, Float> result = new HashMap<BoundingBox, Float>();
-		for(DetectionStruct detStruct : list){
-			if(detStruct.nnConf.relativeSimilarity > getNNThreshold()){
-				result.put(detStruct.detectedBB, detStruct.nnConf.conservativeSimilarity);
-			}
-		}
-		
-		return result;
-	}
 	
 	/**
 	 * Updates  NN threshold in case the negative threshold are above them.

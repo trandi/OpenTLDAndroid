@@ -59,7 +59,7 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
 	private ProcessFrameStruct _processFrameStruct = null;
 	private Properties _tldProperties;
 	
-	private static final Size WORKING_FRAME_SIZE = new Size(108, 60);
+	private static final Size WORKING_FRAME_SIZE = new Size(144, 80);
 	private Mat _workingFrame = new Mat();
 	private String _errMessage;
 	
@@ -144,7 +144,14 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
 					_tld = new Tld(_tldProperties);
 					final Rect scaledDownTrackedBox = scaleDown(_trackedBox, workingRatio);
 					Log.i(Util.TAG, "Working Ration: " + workingRatio + " / Tracking Box: " + _trackedBox + " / Scaled down to: " + scaledDownTrackedBox);
-					_tld.init(_lastGray, scaledDownTrackedBox);
+					try {
+						_tld.init(_lastGray, scaledDownTrackedBox);
+					}catch(Exception eInit){
+				        // start from scratch, you have to select an init box again !
+						_trackedBox = null;
+						_tld = null;
+						throw eInit; // re-throw it as it will be dealt with later
+					}
 				}else{
 					Imgproc.cvtColor(_workingFrame, _currentGray, Imgproc.COLOR_RGB2GRAY);
 				
@@ -156,11 +163,9 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
 					_currentGray.copyTo(_lastGray);
 				}
 			}
-		} catch(Throwable e) {
-	        _errMessage = e.getMessage();
-	        // start from scratch
-			_trackedBox = null;
-			_tld = null;
+		} catch(Exception e) {
+	        _errMessage = e.getClass().getSimpleName() + " / " + e.getMessage();
+	        Log.e(Util.TAG, "TLDView PROBLEM", e);
 		}
 
 		if(_errMessage !=  null){
