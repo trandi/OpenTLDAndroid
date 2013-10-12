@@ -18,6 +18,7 @@ package com.trandi.opentld;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -36,6 +37,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Paint.Style;
+import android.graphics.PorterDuff;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.MotionEvent;
@@ -117,10 +119,11 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
 					Log.i(Util.TAG, "Tracked box DEFINED: " + _trackedBox);
 					break;
 				case MotionEvent.ACTION_MOVE:
-					final Canvas canvas =_holder.lockCanvas();
 					final android.graphics.Rect rect = new android.graphics.Rect(
 									(int)trackedBox1stCorner.get().x + _canvasImgXOffset, (int)trackedBox1stCorner.get().y + _canvasImgYOffset, 
 									(int)corner.x + _canvasImgXOffset, (int)corner.y + _canvasImgYOffset);
+					final Canvas canvas =_holder.lockCanvas(rect);
+					canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR); // remove old rectangle
 					canvas.drawRect(rect, rectPaint);
 					_holder.unlockCanvasAndPost(canvas);
 					break;
@@ -137,6 +140,8 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
 			// Image is too big and this requires too much CPU for a phone, so scale everything down...
 			Imgproc.resize(originalFrame, _workingFrame, WORKING_FRAME_SIZE);
 			final Size workingRatio = new Size(originalFrame.width() / WORKING_FRAME_SIZE.width, originalFrame.height() / WORKING_FRAME_SIZE.height);
+			// usefull to see what we're actually working with...
+			_workingFrame.copyTo(originalFrame.submat(originalFrame.rows() - _workingFrame.rows(), originalFrame.rows(), 0, _workingFrame.cols()));
 			
 			if(_trackedBox != null){
 				if(_tld == null){ // run the 1st time only
@@ -161,6 +166,9 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
 					drawBox(originalFrame, scaleUp(_processFrameStruct.currentBBox, workingRatio), new Scalar(0, 0, 255));
 						
 					_currentGray.copyTo(_lastGray);
+					
+					// overlay the current positive examples on the real image(needs converting at the same time !)
+					//copyTo(_tld.getPPatterns(), originalFrame);
 				}
 			}
 		} catch(Exception e) {
@@ -168,6 +176,7 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
 	        Log.e(Util.TAG, "TLDView PROBLEM", e);
 		}
 
+		
 		if(_errMessage !=  null){
 			Core.putText(originalFrame, _errMessage, new Point(0, 300), Core.FONT_HERSHEY_PLAIN, 1.3d, new Scalar(255, 0, 0), 2);
 		}
@@ -175,6 +184,22 @@ public class TLDView extends JavaCameraView implements CameraBridgeViewBase.CvCa
         return originalFrame;
 	}
 
+	private static void copyTo(List<Mat> patterns, Mat dest) {
+		if(patterns == null || patterns.isEmpty() || dest == null) return;
+		
+		final int patternRows = patterns.get(0).rows();
+		final int patternCols = patterns.get(0).cols();
+		final int vertCount = dest.rows() / patternRows;
+		final int horizCount = patterns.size() / vertCount + 1;
+		
+		int patchIdx = 0;
+		for(int col = dest.cols() - horizCount * patternCols - 1; col < dest.cols()  && patchIdx < patterns.size(); col += patternCols){
+			for(int row = 0; row < dest.rows() && patchIdx < patterns.size(); row += patternRows) {
+				Imgproc.cvtColor(patterns.get(patchIdx), dest.submat(row, row + patternRows, col, col + patternCols), Imgproc.COLOR_GRAY2RGBA);
+				patchIdx++;
+			}
+		}	
+	}
 	
 	@Override
 	public void onCameraViewStarted(int width, int height) {

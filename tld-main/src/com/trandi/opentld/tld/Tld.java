@@ -70,6 +70,7 @@ public class Tld {
 	// Training data
 	Mat _pExample = new Mat(); // positive NN example
 	final List<Pair<int[], Boolean>> _pFerns = new ArrayList<Pair<int[], Boolean>>();	//positive ferns <allFernsHashCodes, true>
+	private final List<Mat> _pPatterns = new ArrayList<Mat>(); //positive patches to display
 	private List<Mat> _nExamples;
 
 	// Last frame data
@@ -659,6 +660,7 @@ public class Tld {
 		final Point pt = new Point(bbhull.x + (bbhull.width - 1) * 0.5f, bbhull.y + (bbhull.height - 1) * 0.5f);
 		
 		_pFerns.clear();
+		_pPatterns.clear();
 		
 		for(int i = 0; i < numWarps; i++){
 			if(i > 0){
@@ -672,6 +674,11 @@ public class Tld {
 				final Mat patch = img.submat(goodBox);
 				final int[] allFernsHashCodes = _classifierFern.getAllFernsHashCodes(patch, goodBox.scaleIdx);
 				_pFerns.add(new Pair<int[], Boolean>(allFernsHashCodes, true));
+				
+//				// this will be used for display only
+//				final Mat tempPattern = new Mat();
+//				Imgproc.resize(patch, tempPattern, new Size(_params.patch_size, _params.patch_size));
+//				_pPatterns.add(tempPattern);
 			}
 		}
 		
@@ -698,6 +705,11 @@ public class Tld {
 		
 		return stdev.toArray()[0];
 	}
+	
+	public List<Mat> getPPatterns(){
+		return _pPatterns;
+	}
+	
 	
 	static final class DetectionStruct {
 		public final BoundingBox detectedBB;
